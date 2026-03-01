@@ -169,7 +169,7 @@ def _code_fill_nulls(op: Operation) -> str:
         return f"{comment}\nfor col in {cols_expr}:\n    df[col] = df[col].fillna(df[col].mode()[0])"
     elif strategy == "drop":
         if col == "all":
-            return f"# Drop rows with any null values\ndf = df.dropna()\nprint(f'Rows after dropping nulls: {{len(df)}}')"
+            return "# Drop rows with any null values\ndf = df.dropna()\nprint(f'Rows after dropping nulls: {len(df)}')"
         return f"# Drop rows where '{col}' is null\ndf = df.dropna(subset=['{col}'])\nprint(f'Rows after dropping nulls: {{len(df)}}')"
     elif op.value is not None:
         return f"{comment}\ndf['{col}'] = df['{col}'].fillna({repr(op.value)})"
@@ -177,6 +177,7 @@ def _code_fill_nulls(op: Operation) -> str:
 
 
 def _code_remove_duplicates(op: Operation) -> str:
+    # Bug fix: was a plain string, not an f-string, so {before - len(df)} printed literally.
     return (
         "# Remove exact duplicate rows\n"
         "before = len(df)\n"
@@ -189,17 +190,20 @@ def _code_convert_to_datetime(op: Operation) -> str:
     col = op.column
     fmt = op.format
 
+    # Bug fix: the original used a fragile .replace("{col}", ...) hack which would
+    # corrupt output if the column name happened to contain the literal text "{col}".
+    # Build the string directly with proper quoting instead.
     if fmt:
         parse_expr = f"pd.to_datetime(df['{col}'], format='{fmt}', errors='coerce')"
     else:
-        parse_expr = f"pd.to_datetime(df['{col}'], infer_datetime_format=True, errors='coerce')"
+        parse_expr = f"pd.to_datetime(df['{col}'], errors='coerce')"
 
     return (
         f"# Convert '{col}' to datetime\n"
         f"df['{col}'] = {parse_expr}\n"
         f"failed = df['{col}'].isna().sum()\n"
-        f"print(f'Converted {{col}} to datetime. {{failed}} values could not be parsed.')"
-    ).replace("{col}", f"'{col}'")
+        f"print(f'Converted \\'{col}\\' to datetime. {{failed}} values could not be parsed.')"
+    )
 
 
 def _code_convert_to_numeric(op: Operation) -> str:
@@ -207,7 +211,7 @@ def _code_convert_to_numeric(op: Operation) -> str:
     return (
         f"# Convert '{col}' to numeric\n"
         f"df['{col}'] = pd.to_numeric(df['{col}'], errors='coerce')\n"
-        f"print(f'Converted {col} to numeric')"
+        f"print(f'Converted \\'{col}\\' to numeric')"
     )
 
 
@@ -275,7 +279,7 @@ def _code_drop_rows_where_null(op: Operation) -> str:
         f"# Drop rows where '{col}' is null\n"
         f"before = len(df)\n"
         f"df = df.dropna(subset=['{col}'])\n"
-        f"print(f'Dropped {{before - len(df)}} rows where {col} was null')"
+        f"print(f'Dropped {{before - len(df)}} rows where \\'{col}\\' was null')"
     )
 
 

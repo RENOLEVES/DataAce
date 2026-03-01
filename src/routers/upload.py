@@ -34,6 +34,8 @@ async def upload_file(file: UploadFile = File(...)):
     session.file_extension = ext
 
     scan_report = scan_dataframe(df)
+    # Cache so chat.py never needs to recompute it.
+    session.scan_report = scan_report
 
     # Summarize scan for the opening assistant message
     if scan_report.issues:

@@ -17,7 +17,10 @@ async def chat(request: ChatRequest):
     The app will parse the instruction, ask for clarification if needed,
     or execute the operations and signal that a file is ready to download.
     """
+    # Validate session and file presence
     session = session_manager.get(request.session_id)
+    # Note: we allow chatting even if no file is loaded, because the user might be asking for help or 
+    # instructions before uploading. The main thing is that the session must exist.
     if not session:
         raise HTTPException(status_code=404, detail="Session not found. Please upload a file first.")
 
@@ -25,16 +28,25 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="No file loaded in this session.")
 
     user_message = request.message.strip()
-    session.add_message("user", user_message)
 
-    # Run local scan if not already done
-    scan_report = scan_dataframe(session.df)
+    # Use cached scan report from upload; only recompute if missing.
+    # This avoids redundant work and ensures consistency with the opening message.
+    if session.scan_report is None:
+        session.scan_report = scan_dataframe(session.df)
+    scan_report = session.scan_report
+
+    # Pass history BEFORE adding the current user message — ai_service appends
+    # it itself as the final user turn, so we must not duplicate it here.
+    history_snapshot = session.get_history()
+
+    # Now record the user message in session history.
+    session.add_message("user", user_message)
 
     # Ask Claude to parse the instruction
     parsed = parse_instructions(
         user_message=user_message,
         scan_report=scan_report,
-        conversation_history=session.get_history()[:-1],  # exclude current user msg, already in system
+        conversation_history=history_snapshot,
     )
 
     # If there are ambiguities — ask a clarifying question

@@ -1,7 +1,7 @@
 import uuid
 import pandas as pd
 from typing import Optional
-from models.schemas import ChatMessage
+from models.schemas import ChatMessage, ScanReport
 
 
 class Session:
@@ -14,6 +14,8 @@ class Session:
         self.cleaned_df: Optional[pd.DataFrame] = None
         self.pending_operations: list[dict] = []
         self.applied_operations: list[dict] = []
+        # Cached at upload time to avoid recomputing on every chat message.
+        self.scan_report: Optional[ScanReport] = None
 
     def add_message(self, role: str, content: str):
         self.history.append(ChatMessage(role=role, content=content))

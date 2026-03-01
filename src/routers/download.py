@@ -13,6 +13,7 @@ async def download_cleaned_file(session_id: str):
     Download the cleaned file for a given session.
     Returns the file in the same format it was uploaded.
     """
+    # Validate session and cleaned file presence
     session = session_manager.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
@@ -20,15 +21,18 @@ async def download_cleaned_file(session_id: str):
     if session.cleaned_df is None:
         raise HTTPException(status_code=400, detail="No cleaned file available yet. Please send cleaning instructions first.")
 
+    # Serialize the cleaned DataFrame back to the original file format
     file_bytes, media_type = serialize_file(
         df=session.cleaned_df,
         filename=session.original_filename,
         extension=session.file_extension,
     )
 
+    # Generate a download filename based on the original, appending "_cleaned" before the extension
     clean_name = session.original_filename.rsplit(".", 1)
     download_name = f"{clean_name[0]}_cleaned.{session.file_extension}"
 
+    # Return the file as a downloadable response with appropriate headers
     return Response(
         content=file_bytes,
         media_type=media_type,

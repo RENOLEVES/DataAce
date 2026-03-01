@@ -1,6 +1,7 @@
 import io
 import pandas as pd
 
+
 def parse_file(filename: str, content: bytes) -> pd.DataFrame:
     ext = filename.rsplit(".", 1)[-1].lower()
 

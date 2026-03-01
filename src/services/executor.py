@@ -85,11 +85,8 @@ def _fill_nulls(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame, str]:
 
 def _remove_duplicates(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame, str]:
     before = len(df)
-    scope = op.scope or "exact"
-
-    if scope == "exact":
-        df = df.drop_duplicates()
-
+    # scope is informational only for now; "exact" is the only supported mode.
+    df = df.drop_duplicates()
     removed = before - len(df)
     return df, f"Removed {removed} duplicate rows."
 
@@ -101,13 +98,14 @@ def _convert_to_datetime(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame,
 
     fmt = op.format  # optional explicit format
 
-    # Handle Excel date serials
-    if df[col].dtype in ["int64", "float64"]:
+    # Use pd.api.types rather than string comparison against dtype names,
+    # which is unreliable across numpy versions.
+    if pd.api.types.is_numeric_dtype(df[col]):
         df[col] = pd.TimedeltaIndex(df[col], unit="d") + pd.Timestamp("1899-12-30")
         return df, f"Converted Excel date serials in '{col}' to datetime."
 
-    converted = pd.to_datetime(df[col], format=fmt, errors="coerce", infer_datetime_format=True)
-    failed = converted.isna().sum() - df[col].isna().sum()
+    converted = pd.to_datetime(df[col], format=fmt, errors="coerce")
+    failed = int(converted.isna().sum()) - int(df[col].isna().sum())
     df[col] = converted
 
     msg = f"Converted '{col}' to datetime."
@@ -123,7 +121,7 @@ def _convert_to_numeric(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame, 
         raise ValueError(f"Column '{col}' not found.")
 
     converted = pd.to_numeric(df[col], errors="coerce")
-    failed = converted.isna().sum() - df[col].isna().sum()
+    failed = int(converted.isna().sum()) - int(df[col].isna().sum())
     df[col] = converted
 
     msg = f"Converted '{col}' to numeric."
@@ -190,7 +188,7 @@ def _drop_rows_where_null(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame
     col = op.column
     before = len(df)
 
-    if col and col != "all":
+    if col and col.lower() != "all":
         if col not in df.columns:
             raise ValueError(f"Column '{col}' not found.")
         df = df.dropna(subset=[col])
@@ -198,7 +196,7 @@ def _drop_rows_where_null(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame
         df = df.dropna()
 
     removed = before - len(df)
-    target = f"column '{col}'" if col and col != "all" else "any column"
+    target = f"column '{col}'" if col and col.lower() != "all" else "any column"
     return df, f"Dropped {removed} rows with null values in {target}."
 
 
@@ -221,7 +219,7 @@ def _cap_outliers(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame, str]:
         IQR = Q3 - Q1
         lower = Q1 - 1.5 * IQR
         upper = Q3 + 1.5 * IQR
-        capped = ((df[col] < lower) | (df[col] > upper)).sum()
+        capped = int(((df[col] < lower) | (df[col] > upper)).sum())
         df[col] = df[col].clip(lower=lower, upper=upper)
         total_capped += capped
 
