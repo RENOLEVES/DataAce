@@ -8,13 +8,13 @@ from models.schemas import Operation, ParsedInstructions, ScanReport
 # client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+client = OpenAI(base_url="http://localhost:1111/v1", api_key="ollama")
 
 SUPPORTED_OPERATIONS = """
 Supported operations:
 - fill_nulls: column (or "all"), strategy ("median"|"mean"|"mode"|"drop"), value (fixed value)
 - remove_duplicates: scope ("exact")
-- convert_to_datetime: column, format (optional, e.g. "%Y-%m-%d")
+- convert_to_datetime: column, format (optional)
 - convert_to_numeric: column
 - standardize_case: column (or "all"), to ("lower"|"upper"|"title")
 - strip_whitespace: column (or "all")
@@ -24,98 +24,123 @@ Supported operations:
 - rename_column: column (old name), value (new name)
 - cap_outliers: column (or "all")
 - convert_excel_dates: column
+- replace_string: column, value (old string to find), to (new string to replace with)
+
+If the user requests something not covered above, use:
+- custom_code: code (a single Python expression or statement using `df`), description (what it does)
+
+Examples of custom_code:
+  - fill with interpolation: df['price'] = df['price'].interpolate(method='linear', limit_direction='both')
+  - normalize a column: df['col'] = (df['col'] - df['col'].min()) / (df['col'].max() - df['col'].min())
+  - extract year from date: df['year'] = pd.to_datetime(df['date']).dt.year
+
+Rules for custom_code:
+- Always use `df` as the dataframe variable
+- Only modify df, do not reassign it entirely (no df = ...)
+- One line only
+- `code` field is REQUIRED, never omit it
+- `column` field should be null for custom_code, put the column name inside the code itself
 """
 
 
+
+# ask AI to parse the user's instruction into structured operations, using the scan report context 
+# to resolve ambiguities and provide defaults where possible. The response includes both the list 
+# of operations to execute and any remaining ambiguities that require user clarification.
 def parse_instructions(user_message: str, scan_report: ScanReport | None, conversation_history: list[dict]) -> ParsedInstructions:
-    """
-    Ask Claude to convert the user's natural language instruction into structured operations.
-    Returns operations + any ambiguities that need clarification.
-    """
     scan_context = ""
     if scan_report:
-        issues_summary = "\n".join([
-            f"- [{i.severity.upper()}] Column '{i.column}': {i.issue_type} — {i.description}"
-            for i in scan_report.issues
-        ])
-        scan_context = f"""
-        The data has already been scanned. Here is what was found:
-        Total rows: {scan_report.total_rows}
-        Total columns: {scan_report.total_columns}
-        Issues detected:
-        {issues_summary}
-        """
+        col_names = ", ".join([i.column for i in scan_report.issues if i.column != "ALL"])
+        all_cols = col_names or "unknown"
+        scan_context = f"Available columns with issues: {all_cols}. Total rows: {scan_report.total_rows}."
 
-    system_prompt = f"""You are a data cleaning assistant. Your job is to parse user instructions into structured cleaning operations.
+    system_prompt = f"""You are a data cleaning assistant. Parse user instructions into structured cleaning operations.
 
-    {SUPPORTED_OPERATIONS}
+                    If something is unclear, put it in the "ambiguities" list:
+                    {{"operations": [], "ambiguities": ["unclear thing here"]}}
 
-    {scan_context}
+                    If the instruction is clear, return operations with empty ambiguities:
+                    {{"operations": [...], "ambiguities": []}}
 
-    Return ONLY valid JSON in this exact format:
-    {{
-    "operations": [
-        {{
-        "operation": "operation_name",
-        "column": "column_name_or_all_or_null",
-        "strategy": "strategy_or_null",
-        "format": "format_or_null",
-        "value": "value_or_null",
-        "scope": "scope_or_null",
-        "to": "to_or_null"
-        }}
-    ],
-    "ambiguities": ["list of things that are unclear and need user clarification"]
-    }}
+                    {SUPPORTED_OPERATIONS}
 
-    Rules:
-    - If the instruction is clear, return operations with empty ambiguities list.
-    - If something is ambiguous (e.g. user says "fix nulls" without specifying strategy), add it to ambiguities.
-    - Only add ambiguities that genuinely block execution. Make sensible defaults where possible.
-    - Never return both operations and ambiguities for the same issue — either handle it or ask.
-    - If instruction references a column not in the scan, add it as ambiguity.
-    """
+                    {scan_context}
 
-    messages = conversation_history + [{"role": "user", "content": user_message}]
+                    CRITICAL RULES:
+                    - Respond with ONLY a JSON object. Nothing else.
+                    - No explanations, no markdown, no prose before or after.
+                    - Your entire response must start with {{ and end with }}
 
+                    Return ONLY this exact JSON format:
+                    {{
+                    "operations": [
+                        {{
+                        "operation": "operation_name",
+                        "column": "column_name_or_null",
+                        "strategy": null,
+                        "format": null,
+                        "value": null,
+                        "scope": null,
+                        "to": null,
+                        "code": null,
+                        "description": null
+                        }}
+                    ],
+                    "ambiguities": []
+                    }}"""
 
-    ## for authropic client:
-    # response = client.messages.create(
-    #     model="claude-sonnet-4-6",
-    #     max_tokens=1000,
-    #     system=system_prompt,
-    #     messages=messages,
-    # )
+    retry_messages = conversation_history + [{"role": "user", "content": user_message}]
 
-    # raw = response.content[0].text.strip()
+    for attempt in range(3):
+        response = client.chat.completions.create(
+            model="qwen2.5-coder:7b",
+            max_tokens=1000,
+            temperature=0.1,
+            messages=[{"role": "system", "content": system_prompt}] + retry_messages,
+        )
+        raw = response.choices[0].message.content.strip()
 
-    response = client.chat.completions.create(
-        model="llama3.2",
-        max_tokens=1000,
-        messages=[{"role": "system", "content": system_prompt}] + messages,
-    )
-    raw = response.choices[0].message.content.strip()
+        # Strip markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
 
-    # Strip markdown fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
+        # Extract JSON object
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
 
-    parsed = json.loads(raw)
-    operations = [Operation(**op) for op in parsed.get("operations", [])]
-    ambiguities = parsed.get("ambiguities", [])
+        if start == -1 or end == 0:
+            print(f"[parse_instructions] attempt {attempt+1}: no JSON found, retrying...")
+            retry_messages = retry_messages + [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": "You must respond with ONLY a JSON object. Start your response with { and end with }. No other text allowed."}
+            ]
+            continue
 
-    return ParsedInstructions(operations=operations, ambiguities=ambiguities)
+        raw = raw[start:end]
+        import re
+        raw = re.sub(r",\s*([}\]])", r"\1", raw)
+        raw = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r'\\\\', raw)
+
+        try:
+            parsed = json.loads(raw)
+            operations = [Operation(**op) for op in parsed.get("operations", [])]
+            ambiguities = parsed.get("ambiguities", [])
+            return ParsedInstructions(operations=operations, ambiguities=ambiguities)
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"[parse_instructions] attempt {attempt+1}: parse error {e}, retrying...")
+            continue
+
+    # All retries failed — return empty so chat.py shows a friendly message
+    print("[parse_instructions] all retries failed, returning empty")
+    return ParsedInstructions(operations=[], ambiguities=["Could not parse your instruction. Please try rephrasing."])
 
 # This function generates a clarifying question when the user's instruction is ambiguous.
 # It uses the list of ambiguities identified by parse_instructions and the scan report 
 # context to ask a specific question that will help resolve the ambiguity.
 def generate_clarifying_question(ambiguities: list[str], scan_report: ScanReport | None) -> str:
-    """
-    Given a list of ambiguities, generate ONE clear, specific clarifying question for the user.
-    """
     scan_context = ""
     if scan_report:
         cols = ", ".join(set(i.column for i in scan_report.issues if i.column != "ALL"))
@@ -143,8 +168,9 @@ def generate_clarifying_question(ambiguities: list[str], scan_report: ScanReport
 
 
     response = client.chat.completions.create(
-        model="llama3.2",
+        model="qwen2.5-coder:7b",
         max_tokens=1000,
+        temperature=0.1,
         messages=[{"role": "system", "content": prompt}],
     )
 
@@ -154,9 +180,6 @@ def generate_clarifying_question(ambiguities: list[str], scan_report: ScanReport
 # This function is used to generate a human-friendly summary of the changes and warnings after executing operations.
 # used in chat.py to create a nice assistant reply.
 def generate_summary(changes: list[str], warnings: list[str]) -> str:
-    """
-    Generate a short human-friendly summary of what was done.
-    """
     if not changes and not warnings:
         return "No changes were applied."
 
@@ -180,8 +203,9 @@ def generate_summary(changes: list[str], warnings: list[str]) -> str:
     # )
 
     response = client.chat.completions.create(
-        model="llama3.2",
+        model="qwen2.5-coder:7b",
         max_tokens=1000,
+        temperature=0.1,
         messages=[{"role": "system", "content": prompt}],
     )
 

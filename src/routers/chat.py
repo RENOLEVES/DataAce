@@ -10,13 +10,17 @@ from services.ai_service import parse_instructions, generate_clarifying_question
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+# Send a chat message with cleaning instructions, get back a reply and (if applicable) a download link for the cleaned file.
+# Always to check if a session is valid and has a file loaded, but we allow chatting even if the scan report is missing 
+# (it will be generated on demand) because the user might want to ask questions before uploading.
+# The main flow is:
+# 1. Validate session and file loaded.
+# 2. Parse the user's instruction using an LLM, passing in the scan report and conversation history for context.
+# 3. If the instruction is ambiguous, generate a clarifying question and return it without executing anything.
+# 4. If the instruction is clear, execute the parsed operations on the DataFrame.
+# 5. Generate a friendly summary of the changes and any warnings, and return it along with a download link for the cleaned file.
 @router.post("", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """
-    Send a message in the context of an active session.
-    The app will parse the instruction, ask for clarification if needed,
-    or execute the operations and signal that a file is ready to download.
-    """
     # Validate session and file presence
     session = session_manager.get(request.session_id)
     # Note: we allow chatting even if no file is loaded, because the user might be asking for help or 
@@ -35,18 +39,18 @@ async def chat(request: ChatRequest):
         session.scan_report = scan_dataframe(session.df)
     scan_report = session.scan_report
 
-    # Pass history BEFORE adding the current user message — ai_service appends
-    # it itself as the final user turn, so we must not duplicate it here.
-    history_snapshot = session.get_history()
+    # # Pass history BEFORE adding the current user message — ai_service appends
+    # # it itself as the final user turn, so we must not duplicate it here.
+    # history_snapshot = session.get_history()
 
     # Now record the user message in session history.
     session.add_message("user", user_message)
 
-    # Ask Claude to parse the instruction
+    # Ask LLM to parse the instruction
     parsed = parse_instructions(
         user_message=user_message,
         scan_report=scan_report,
-        conversation_history=history_snapshot,
+        conversation_history=[],
     )
 
     # If there are ambiguities — ask a clarifying question
@@ -68,8 +72,14 @@ async def chat(request: ChatRequest):
         session.add_message("assistant", reply)
         return ChatResponse(session_id=session.id, reply=reply, download_ready=False)
 
+    # Take a snapshot before applying changes, for undo/redo functionality. We do this even if there are warnings,
+    # because the user might want to undo if they don't like the results. 
+    # The description is just the user's message, but it could be enhanced to include more context if needed.
+    session.snapshot(description=user_message)
+
     # Execute operations
-    cleaned_df, exec_result = execute_operations(session.df, parsed.operations)
+    source_df = session.cleaned_df if session.cleaned_df is not None else session.df
+    cleaned_df, exec_result = execute_operations(source_df, parsed.operations)
     session.cleaned_df = cleaned_df
 
     # Record what was actually applied for notebook generation

@@ -1,5 +1,8 @@
+import math
+
 import pandas as pd
 import numpy as np
+import re
 from models.schemas import Operation
 
 
@@ -40,6 +43,8 @@ def _dispatch(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame, str]:
         "rename_column": _rename_column,
         "cap_outliers": _cap_outliers,
         "convert_excel_dates": _convert_excel_dates,
+        "replace_string": _replace_string,
+        "custom_code": _custom_code,
     }
 
     handler = handlers.get(op.operation)
@@ -242,3 +247,52 @@ def _resolve_columns(df: pd.DataFrame, column: str | None) -> list[str]:
     if column not in df.columns:
         raise ValueError(f"Column '{column}' not found.")
     return [column]
+
+def _replace_string(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame, str]:
+    col = op.column
+    if col not in df.columns:
+        raise ValueError(f"Column '{col}' not found.")
+    
+    old_val = str(op.value) if op.value is not None else ""
+    new_val = str(op.to) if op.to is not None else ""
+    
+    count = int(df[col].astype(str).str.contains(old_val, regex=False).sum())
+    df[col] = df[col].astype(str).str.replace(old_val, new_val, regex=False)
+    
+    return df, f"Replaced '{old_val}' with '{new_val}' in '{col}' ({count} occurrences)."
+
+# custom_code is handled separately since it doesn't fit the standard operation pattern
+def _custom_code(df: pd.DataFrame, op: Operation) -> tuple[pd.DataFrame, str]:
+    code = op.code
+    if not code:
+        return df, "Skipped custom_code: no code provided by model."
+
+    print(f"[custom_code] executing: {code}")
+    # Safety check — block dangerous operations
+    forbidden = ["import", "open(", "exec(", "eval(", "__", "os.", "sys.", "subprocess"]
+    for word in forbidden:
+        if word in code:
+            raise ValueError(f"Forbidden expression in code: '{word}'")
+
+    local_vars = {
+    "df": df,
+    "pd": pd,
+    "np": np,
+    "math": math,
+    "int": int,
+    "float": float,
+    "str": str,
+    "len": len,
+    "list": list,
+    "dict": dict,
+    "range": range,
+    "enumerate": enumerate,
+    "zip": zip,
+    "re": re,
+    }
+    
+    exec(code, {"__builtins__": {}}, local_vars)
+    df = local_vars["df"]
+
+    description = op.description or f"Executed custom code: {code}"
+    return df, description

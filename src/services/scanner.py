@@ -3,18 +3,32 @@ import numpy as np
 from models.schemas import ScanReport, ScanIssue
 
 
+# Core scanning logic to analyze the DataFrame and identify potential issues 
+# This is called once at file upload time to generate the initial scan report, 
+# which is cached in the session for later use during instruction parsing and clarification
 def scan_dataframe(df: pd.DataFrame) -> ScanReport:
-    """
-    Run a rule-based scan over the dataframe and return a structured report
-    of detected data quality issues.
-    """
+
+    # Create a list to hold detected issues, which will be included in the scan report
+    # - column: the column name where the issue was found (or "ALL" for whole-dataframe issues)
+    # - issue_type: a short code for the type of issue
+    # - severity: "info", "warning", or "critical" based on how severe the issue is
+    # - description: a human-readable explanation of the issue
+    # - affected_count: how many rows are affected by this issue
     issues: list[ScanIssue] = []
 
+    # Loop through each column to check for various issues, such as missing values, pseudo-nulls 
+    # whitespace issues, outliers, mixed types, and Excel date serials
     for col in df.columns:
+
+        # 2D data series
         series = df[col]
 
-        # ── Nulls ──────────────────────────────────────────────────────────────
+        # All nulls
         null_count = int(series.isna().sum())
+
+        # If more than 10% of values are missing, it's a warning
+        # if more than 50%, it's critical
+        # Otherwise, it's just info
         if null_count > 0:
             pct = null_count / len(df)
             severity = "critical" if pct > 0.5 else "warning" if pct > 0.1 else "info"
@@ -27,9 +41,14 @@ def scan_dataframe(df: pd.DataFrame) -> ScanReport:
                 suggestion="fill_nulls or drop_rows_where_null",
             ))
 
-        # ── Pseudo-nulls ───────────────────────────────────────────────────────
+        # Pseudo-nulls (e.g. "N/A", "none", "-", etc.) that should be treated as nulls. Only for object columns
         if series.dtype == object:
+
+            # List any common pseudo-null values and count how many there are
+            # This can indicate data quality issues where missing values were not properly encoded as nulls
             pseudo = ["N/A", "n/a", "NA", "na", "none", "None", "NULL", "null", "-", "?", ""]
+
+            # All nulls
             pseudo_count = int(series.isin(pseudo).sum())
             if pseudo_count > 0:
                 issues.append(ScanIssue(
@@ -41,7 +60,7 @@ def scan_dataframe(df: pd.DataFrame) -> ScanReport:
                     suggestion="replace_pseudo_nulls",
                 ))
 
-        # ── Whitespace ─────────────────────────────────────────────────────────
+        # Leading/trailing whitespace in string columns, which can cause issues with matching and grouping. Only for object columns
         if series.dtype == object:
             stripped = series.dropna().str.strip()
             ws_count = int((series.dropna() != stripped).sum())
@@ -56,13 +75,19 @@ def scan_dataframe(df: pd.DataFrame) -> ScanReport:
                 ))
 
         # ── Duplicates (whole-row, reported once under a sentinel column) ──────
-        # Handled below outside the column loop.
+        # Handled below outside the column loop
 
-        # ── Outliers ───────────────────────────────────────────────────────────
+        # Calculate outliers using the IQR method for numeric columns with enough non-null values (Only for numeric columns)
         if pd.api.types.is_numeric_dtype(series) and series.notna().sum() > 4:
+
+            # 0.25 and 0.75 quantiles to define the IQR range
             Q1 = series.quantile(0.25)
             Q3 = series.quantile(0.75)
+
+            # IQR interquartile range
             IQR = Q3 - Q1
+
+            # If IQR is 0, it means all values are the same, so we skip outlier detection to avoid false positives
             if IQR > 0:
                 lower = Q1 - 1.5 * IQR
                 upper = Q3 + 1.5 * IQR
@@ -77,7 +102,7 @@ def scan_dataframe(df: pd.DataFrame) -> ScanReport:
                         suggestion="cap_outliers",
                     ))
 
-        # ── Mixed types / numeric stored as string ─────────────────────────────
+        # Mixed types in a column, which can indicate data quality issues and may require type conversion (only for object columns)
         if series.dtype == object:
             non_null = series.dropna()
             if len(non_null) > 0:
@@ -102,7 +127,8 @@ def scan_dataframe(df: pd.DataFrame) -> ScanReport:
                         suggestion="convert_to_numeric",
                     ))
 
-        # ── Excel date serials ─────────────────────────────────────────────────
+        # Excel date serial numbers, which are numeric but represent dates. 
+        # This can cause issues if not converted to proper date format (only for numeric columns)
         if pd.api.types.is_numeric_dtype(series):
             non_null = series.dropna()
             if len(non_null) > 0 and non_null.between(20000, 60000).mean() > 0.8:
@@ -115,7 +141,8 @@ def scan_dataframe(df: pd.DataFrame) -> ScanReport:
                     suggestion="convert_excel_dates",
                 ))
 
-    # ── Duplicate rows (whole-dataframe check) ─────────────────────────────────
+    # Duplicate rows. 
+    # This can indicate data quality issues and may require deduplication
     dup_count = int(df.duplicated().sum())
     if dup_count > 0:
         issues.append(ScanIssue(

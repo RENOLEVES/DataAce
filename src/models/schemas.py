@@ -27,6 +27,8 @@ class Operation(BaseModel):
     value: Optional[Any] = None
     scope: Optional[str] = None
     to: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
 
 
 class ParsedInstructions(BaseModel):

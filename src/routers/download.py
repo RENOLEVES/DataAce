@@ -7,6 +7,12 @@ from utils.file_parser import serialize_file
 router = APIRouter(prefix="/download", tags=["download"])
 
 
+# Download the cleaned file for a given session. The file is returned in the same format it was uploaded.
+# The flow is:
+# 1. Validate session and check that a cleaned file is available.
+# 2. Serialize the cleaned DataFrame back to the original file format.
+# 3. Generate a download filename based on the original, appending "_cleaned" before the extension.
+# 4. Return the file as a downloadable response with appropriate headers.
 @router.get("/{session_id}")
 async def download_cleaned_file(session_id: str):
     """
