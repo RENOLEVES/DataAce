@@ -91,6 +91,7 @@ def parse_instructions(user_message: str, scan_report: ScanReport | None, conver
 
     retry_messages = conversation_history + [{"role": "user", "content": user_message}]
 
+    # In case of parsing failures, we retry a 3 times with the conversation history to give the model more context.
     for attempt in range(3):
         response = client.chat.completions.create(
             model="qwen2.5-coder:7b",
@@ -184,7 +185,7 @@ def generate_summary(changes: list[str], warnings: list[str]) -> str:
         return "No changes were applied."
 
     changes_text = "\n".join(f"- {c}" for c in changes)
-    warnings_text = "\n".join(f"- ⚠️ {w}" for w in warnings) if warnings else ""
+    warnings_text = "\n".join(f"- {w}" for w in warnings) if warnings else ""
 
     prompt = f"""Summarize these data cleaning actions in 2-3 friendly sentences for a data analyst.
     Be concise, mention key numbers, and note any warnings.

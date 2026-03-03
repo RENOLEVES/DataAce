@@ -145,6 +145,7 @@ def _generate_operation_code(op: Operation) -> str | None:
         "rename_column": _code_rename_column,
         "cap_outliers": _code_cap_outliers,
         "convert_excel_dates": _code_convert_excel_dates,
+        "custom_code": _code_custom_code,
     }
     generator = generators.get(op.operation)
     return generator(op) if generator else None
@@ -320,4 +321,13 @@ def _code_convert_excel_dates(op: Operation) -> str:
     return (
         f"# Convert Excel date serial numbers in '{col}' to datetime\n"
         f"df['{col}'] = pd.TimedeltaIndex(df['{col}'], unit='d') + pd.Timestamp('1899-12-30')"
+    )
+
+
+def _code_custom_code(op: Operation) -> str:
+    code = op.code or ""
+    description = op.description or "Custom operation"
+    return (
+        f"# {description}\n"
+        f"{code}"
     )

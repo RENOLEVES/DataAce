@@ -13,7 +13,8 @@ class Session:
         self.history: list[ChatMessage] = []
         self.cleaned_df: Optional[pd.DataFrame] = None
         self.pending_operations: list[dict] = []
-        self.applied_operations: list[dict] = []
+        self.applied_operations: list[dict] = [] # keep track of applied operations for notebook generation
+        self.future_operations: list[dict] = [] # for redo
         self.scan_report: Optional[ScanReport] = None
 
         # undo/redo feature
@@ -29,10 +30,12 @@ class Session:
 
         # Only save a snapshot if there's a cleaned DataFrame to save, 
         # otherwise we might be saving the original uncleaned state multiple times.
-        if self.cleaned_df is not None:
+
+        current = self.cleaned_df if self.cleaned_df is not None else self.df
+        if current is not None:
 
             # Append a copy of the current cleaned DataFrame to the history stack before applying the new operation.
-            self.df_history.append(self.cleaned_df.copy())
+            self.df_history.append(current.copy())
 
             # Append the description of the operation to the operation history, so we can show it in the UI or use it for undo/redo.
             self.operation_history.append(description)
@@ -54,6 +57,10 @@ class Session:
         # pop the last operation description since we're undoing it
         if self.operation_history:
             self.operation_history.pop()
+
+        # pop the applied operation so that the notebook generation won't include it
+        if self.applied_operations:
+            self.future_operations.append(self.applied_operations.pop())
         return True
 
     def redo(self) -> bool:
@@ -61,6 +68,12 @@ class Session:
             return False
         self.df_history.append(self.cleaned_df.copy())
         self.cleaned_df = self.df_future.pop()
+
+        # Append the operation back to applied operations
+        if self.future_operations:
+            op = self.future_operations.pop()
+            self.applied_operations.append(op)
+            self.operation_history.append("")
         return True
 
     def add_message(self, role: str, content: str):
