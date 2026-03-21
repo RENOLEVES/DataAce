@@ -1,6 +1,9 @@
 # Data Cleaner API
 
 A FastAPI backend for AI-powered data cleaning. Upload a messy file, describe what to fix in plain English, and download a clean file.
+<img width="1920" height="945" alt="image" src="https://github.com/user-attachments/assets/f4d67e19-c91a-4c2a-bf42-8fc92fb4284a" />
+<img width="1681" height="733" alt="image" src="https://github.com/user-attachments/assets/3b12788c-509b-4041-afcd-8366997d4217" />
+
 
 ## Architecture
 
